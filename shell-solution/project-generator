@@ -1,0 +1,193 @@
+#!/bin/bash
+# vim:syntax=sh
+
+set -x
+
+#####
+#
+# These are all things you should edit
+#
+################################################################################
+OWNER=thecjharries
+IS_ORG=false
+REPO=raw-templating
+DIRECTORY="$HOME/code/$OWNER/$REPO"
+DESCRIPTION='i guess i thought this was too hard to do in python or something'
+STARTER_DIRECTORY="$XDG_CONFIG_HOME/git/starter-contents"
+DEVELOP=dev
+
+#####
+#
+# These control what will get set up
+#
+################################################################################
+if [[ -z "$GITHUB_API_TOKEN" ]]; then
+    echo "No GitHub token found"
+    exit 1
+fi
+
+ENABLE_COVERALLS=true
+if [[ -z "$COVERALLS_API_TOKEN" ]]; then
+    echo "No Coveralls token found"
+    ENABLE_COVERALLS=false
+fi
+
+ENABLE_CIRCLE_CI=true
+if [[ -z "$CIRCLE_CI_API_TOKEN" ]]; then
+    echo "No CircleCI token found"
+    ENABLE_CIRCLE_CI=false
+fi
+
+#####
+#
+# These are all things that should stay the same unless you're self-hosted or
+# enterprise
+#
+################################################################################
+GH_ROOT="https://api.github.com"
+GH_PROJECT_CHUNK="/$OWNER/$REPO"
+COVERALLS_ROOT="https://coveralls.io/api"
+COVERALLS_PROJECT_CHUNK="/github/$OWNER/$REPO"
+CIRCLE_CI_ROOT="https://circleci.com/api/v1.1"
+CIRCLE_CI_PROJECT_CHUNK="/github/$OWNER/$REPO"
+
+####
+#
+# Below here you need to be careful if you edit. I'm not saying it's a hot mess
+# that might break if you even look at it, but I'm not not saying that either
+#
+################################################################################
+
+GH_CREATE_REPO_URI="/user/repos"
+if [[ true = "$IS_ORG" ]]; then
+    GH_CREATE_REPO_URI="/orgs/$OWNER/repos"
+fi
+
+mkdir -p "$DIRECTORY"
+cd "$DIRECTORY"
+git init
+touch "$DIRECTORY/.git/wotw-env"
+rm -rf .git/description
+echo "$DESCRIPTION" >> .git/description
+git flow init -d -f
+git checkout $DEVELOP
+
+if [[ -d "$STARTER_DIRECTORY" ]]; then
+    cp -rT "$STARTER_DIRECTORY" .
+    tree --dirsfirst --noreport -a -I '.git' .
+    git add LICENSE
+    git commit -m 'Define license'
+    git add .editorconfig
+    git commit -m 'Establish basic code standards'
+    git add .github CONTRIBUTING.md
+    git commit -m 'Include GitHub community items'
+fi
+
+curl -v -X POST \
+    -H "Authorization: token $GITHUB_API_TOKEN" \
+    -H "User-Agent: $OWNER" \
+    -H 'Content-Type: application/json' \
+    -H 'Time-Zone: America/Chicago' \
+    -H 'Accept: application/vnd.github.v3+json' \
+    -d "{\"name\":\"$REPO\",\"description\":\"$DESCRIPTION\",\"auto_init\":false}" \
+    ${GH_ROOT}${GH_CREATE_REPO_URI} \
+    > response.json
+
+eval $( jq -r '@sh "SSH_URL=\(.ssh_url) HTML_URL=\(.html_url) GIT_URL=\(.git_url) GH_URL=\(.url)"' response.json )
+mv response.json .git/
+
+cat << EOF > "$DIRECTORY/.git/wotw-env"
+OWNER="$OWNER"
+REPO="$REPO"
+DIRECTORY="$DIRECTORY"
+GH_URL="$GH_URL"
+EOF
+
+git remote add origin "$SSH_URL"
+git push -u origin $DEVELOP
+git checkout master
+git push -u origin master
+git checkout $DEVELOP
+
+curl -v -X PATCH \
+    -H "Authorization: token $GITHUB_API_TOKEN" \
+    -H "User-Agent: $OWNER" \
+    -H 'Content-Type: application/json' \
+    -H 'Time-Zone: America/Chicago' \
+    -H 'Accept: application/vnd.github.v3+json' \
+    -d "{\"homepage\":\"$HTML_URL#readme\",\"default_branch\":\"$DEVELOP\"}" \
+    $GH_URL
+
+curl -X PUT \
+    -H "Authorization: token $GITHUB_API_TOKEN" \
+    -H "User-Agent: $OWNER" \
+    -H 'Content-Type: application/json' \
+    -H 'Time-Zone: America/Chicago' \
+    -H 'Accept: application/vnd.github.v3+json' \
+    -d '{"required_status_checks":null,"enforce_admins":null,"required_pull_request_reviews":null,"restrictions":null}' \
+    ${GH_ROOT}/repos/${OWNER}/${REPO}/branches/dev/protection
+
+curl -X PUT \
+    -H "Authorization: token $GITHUB_API_TOKEN" \
+    -H "User-Agent: $OWNER" \
+    -H 'Content-Type: application/json' \
+    -H 'Time-Zone: America/Chicago' \
+    -H 'Accept: application/vnd.github.v3+json' \
+    -d '{"required_status_checks":null,"enforce_admins":null,"required_pull_request_reviews":null,"restrictions":null}' \
+    ${GH_ROOT}/repos/${OWNER}/${REPO}/branches/master/protection
+
+echo -e "# \`$REPO\`\n\n" > README.md
+
+
+if [[ true = "$ENABLE_COVERALLS" ]]; then
+
+    curl -X POST \
+        -H "Authorization: token $COVERALLS_API_TOKEN" \
+        -H 'Content-Type: application/json' \
+        -H 'Accept: application/json' \
+        -d "{\"repo\":{\"service\":\"github\",\"name\":\"$OWNER/$REPO\",\"comment_on_pull_requests\":false,\"send_build_status\":true,\"commit_status_fail_threshold\":75,\"commit_status_fail_change_threshold\":null}}" \
+        ${COVERALLS_ROOT}/repos
+
+    echo "[![Coverage Status](https://img.shields.io/coveralls${COVERALLS_PROJECT_CHUNK}/${DEVELOP})](https://coveralls.io${COVERALLS_PROJECT_CHUNK}?branch=$DEVELOP)" >> README.md
+
+    curl -X GET \
+        -H "Authorization: token $COVERALLS_API_TOKEN" \
+        -H 'Accept: application/json' \
+        ${COVERALLS_ROOT}/repos${COVERALLS_PROJECT_CHUNK} \
+        > coveralls.json
+
+    cp coveralls.json .git/
+
+fi
+
+if [[ true = "$ENABLE_CIRCLE_CI" ]]; then
+
+    git add .circleci
+    git commit -m 'Add a basic Circle CI config'
+
+    curl -X POST \
+        -u "$CIRCLE_CI_API_TOKEN:" \
+        -H 'Content-Type: application/json' \
+        -H 'Accept: application/json' \
+        -d '{}' \
+        ${CIRCLE_CI_ROOT}/project${CIRCLE_CI_PROJECT_CHUNK}/follow
+        > .git/circleci.json
+
+    echo "[![CircleCI](https://img.shields.io/circleci/build${CIRCLE_CI_PROJECT_CHUNK}/${DEVELOP})](https://circleci.com/gh${GH_PROJECT_CHUNK}/tree/${DEVELOP})" >> README.md
+
+    if [[ true = "$ENABLE_COVERALLS" ]]; then
+
+        curl -X POST \
+            -u "$CIRCLE_CI_API_TOKEN:" \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json' \
+            -d "$(jq -c --arg name COVERALLS_TOKEN '{name: $name, value: .token}' coveralls.json)" \
+            ${CIRCLE_CI_ROOT}/project${CIRCLE_CI_PROJECT_CHUNK}/envvar
+
+    fi
+
+fi
+
+rm -rf coveralls.json
+
+echo -e "\n\n" >> README.md
