@@ -1,0 +1,21 @@
+#!/bin/bash
+# vim:syntax=sh
+
+set -x
+
+SEARCH_DIRECTORY="$1"
+
+if [[ -f "$SEARCH_DIRECTORY/.git/wotw-env" ]]; then
+    eval $( cat "$SEARCH_DIRECTORY/.git/wotw-env" )
+else
+    echo "Not a project that can be destroyed"
+    exit 1
+fi
+
+curl -v -X DELETE \
+    -H "Authorization: token $GITHUB_API_TOKEN" \
+    -H "User-Agent: $OWNER" \
+    -H 'Content-Type: application/json' \
+    $GH_URL
+
+rm -rf $( dirname "$SEARCH_DIRECTORY" )
